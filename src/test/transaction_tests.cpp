@@ -1,25 +1,25 @@
-// Copyright (c) 2011-2017 The Bitcoin Core developers
+// Copyright (c) 2011-2016 The Bitcoin Core developers
 // Distributed under the MIT software license, see the accompanying
 // file COPYING or http://www.opensource.org/licenses/mit-license.php.
 
-#include <test/data/tx_invalid.json.h>
-#include <test/data/tx_valid.json.h>
-#include <test/test_bitcoin.h>
+#include "data/tx_invalid.json.h"
+#include "data/tx_valid.json.h"
+#include "test/test_bitcoin.h"
 
-#include <clientversion.h>
-#include <checkqueue.h>
-#include <consensus/tx_verify.h>
-#include <consensus/validation.h>
-#include <core_io.h>
-#include <key.h>
-#include <keystore.h>
-#include <validation.h>
-#include <policy/policy.h>
-#include <script/script.h>
-#include <script/sign.h>
-#include <script/script_error.h>
-#include <script/standard.h>
-#include <utilstrencodings.h>
+#include "clientversion.h"
+#include "checkqueue.h"
+#include "consensus/tx_verify.h"
+#include "consensus/validation.h"
+#include "core_io.h"
+#include "key.h"
+#include "keystore.h"
+#include "validation.h"
+#include "policy/policy.h"
+#include "script/script.h"
+#include "script/sign.h"
+#include "script/script_error.h"
+#include "script/standard.h"
+#include "utilstrencodings.h"
 
 #include <map>
 #include <string>
@@ -369,7 +369,7 @@ void CreateCreditAndSpend(const CKeyStore& keystore, const CScript& outscript, C
     inputm.vout.resize(1);
     inputm.vout[0].nValue = 1;
     inputm.vout[0].scriptPubKey = CScript();
-    bool ret = SignSignature(keystore, *output, inputm, 0, SIGHASH_ALL);
+    bool ret = SignSignature(keystore, *output, inputm, 0, SIGHASH_ALL | SIGHASH_FORKID);
     assert(ret == success);
     CDataStream ssin(SER_NETWORK, PROTOCOL_VERSION);
     ssin << inputm;
@@ -450,7 +450,7 @@ BOOST_AUTO_TEST_CASE(test_big_witness_transaction) {
 
     // sign all inputs
     for(uint32_t i = 0; i < mtx.vin.size(); i++) {
-        bool hashSigned = SignSignature(keystore, scriptPubKey, mtx, i, 1000, sigHashes.at(i % sigHashes.size()));
+        bool hashSigned = SignSignature(keystore, scriptPubKey, mtx, i, 1000,  SIGHASH_FORKID | sigHashes.at(i % sigHashes.size()));
         assert(hashSigned);
     }
 
@@ -480,7 +480,8 @@ BOOST_AUTO_TEST_CASE(test_big_witness_transaction) {
 
     for(uint32_t i = 0; i < mtx.vin.size(); i++) {
         std::vector<CScriptCheck> vChecks;
-        CScriptCheck check(coins[tx.vin[i].prevout.n].out, tx, i, SCRIPT_VERIFY_P2SH | SCRIPT_VERIFY_WITNESS, false, &txdata);
+        const CTxOut& output = coins[tx.vin[i].prevout.n].out;
+        CScriptCheck check(output.scriptPubKey, output.nValue, tx, i, SCRIPT_VERIFY_P2SH | SCRIPT_VERIFY_WITNESS, false, &txdata);
         vChecks.push_back(CScriptCheck());
         check.swap(vChecks.back());
         control.Add(vChecks);
