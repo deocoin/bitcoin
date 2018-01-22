@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-# Copyright (c) 2015-2017 The Bitcoin Core developers
+# Copyright (c) 2015-2016 The Bitcoin Core developers
 # Distributed under the MIT software license, see the accompanying
 # file COPYING or http://www.opensource.org/licenses/mit-license.php.
 """Test block processing.
@@ -18,10 +18,9 @@ from test_framework.blocktools import *
 import time
 from test_framework.key import CECKey
 from test_framework.script import *
-from test_framework.mininode import network_thread_start
 import struct
 
-class PreviousSpendableOutput():
+class PreviousSpendableOutput(object):
     def __init__(self, tx = CTransaction(), n = -1):
         self.tx = tx
         self.n = n  # the output we're spending
@@ -36,15 +35,12 @@ class CBrokenBlock(CBlock):
         self.vtx = copy.deepcopy(base_block.vtx)
         self.hashMerkleRoot = self.calc_merkle_root()
 
-    def serialize(self, with_witness=False):
+    def serialize(self):
         r = b""
         r += super(CBlock, self).serialize()
         r += struct.pack("<BQ", 255, len(self.vtx))
         for tx in self.vtx:
-            if with_witness:
-                r += tx.serialize_with_witness()
-            else:
-                r += tx.serialize_without_witness()
+            r += tx.serialize()
         return r
 
     def normal_serialize(self):
@@ -53,11 +49,12 @@ class CBrokenBlock(CBlock):
         return r
 
 class FullBlockTest(ComparisonTestFramework):
+
     # Can either run this test as 1 node with expected answers, or two and compare them.
     # Change the "outcome" variable from each TestInstance object to only do the comparison.
-    def set_test_params(self):
+    def __init__(self):
+        super().__init__()
         self.num_nodes = 1
-        self.setup_clean_chain = True
         self.block_heights = {}
         self.coinbase_key = CECKey()
         self.coinbase_key.set_secretbytes(b"horsebattery")
@@ -72,7 +69,7 @@ class FullBlockTest(ComparisonTestFramework):
     def run_test(self):
         self.test = TestManager(self, self.options.tmpdir)
         self.test.add_all_connections(self.nodes)
-        network_thread_start()
+        NetworkThread().start() # Start up network handling in another thread
         self.test.run()
 
     def add_transactions_to_block(self, block, tx_list):
@@ -91,8 +88,9 @@ class FullBlockTest(ComparisonTestFramework):
         if (scriptPubKey[0] == OP_TRUE):  # an anyone-can-spend
             tx.vin[0].scriptSig = CScript()
             return
-        (sighash, err) = SignatureHash(spend_tx.vout[n].scriptPubKey, tx, 0, SIGHASH_ALL)
-        tx.vin[0].scriptSig = CScript([self.coinbase_key.sign(sighash) + bytes(bytearray([SIGHASH_ALL]))])
+        sighash = SegwitVersion1SignatureHash(spend_tx.vout[n].scriptPubKey, tx, 0,
+                                              SIGHASH_ALL|SIGHASH_FORKID, spend_tx.vout[n].nValue)
+        tx.vin[0].scriptSig = CScript([self.coinbase_key.sign(sighash) + bytes(bytearray([SIGHASH_ALL|SIGHASH_FORKID]))])
 
     def create_and_sign_transaction(self, spend_tx, n, value, script=CScript([OP_TRUE])):
         tx = self.create_tx(spend_tx, n, value, script)
@@ -400,7 +398,7 @@ class FullBlockTest(ComparisonTestFramework):
         yield rejected(RejectResult(16, b'bad-cb-length'))
 
         # Extend the b26 chain to make sure bitcoind isn't accepting b26
-        block(27, spend=out[7])
+        b27 = block(27, spend=out[7])
         yield rejected(False)
 
         # Now try a too-large-coinbase script
@@ -412,7 +410,7 @@ class FullBlockTest(ComparisonTestFramework):
         yield rejected(RejectResult(16, b'bad-cb-length'))
 
         # Extend the b28 chain to make sure bitcoind isn't accepting b28
-        block(29, spend=out[7])
+        b29 = block(29, spend=out[7])
         yield rejected(False)
 
         # b30 has a max-sized coinbase scriptSig.
@@ -556,6 +554,7 @@ class FullBlockTest(ComparisonTestFramework):
         assert_equal(numTxes <= b39_outputs, True)
 
         lastOutpoint = COutPoint(b40.vtx[1].sha256, 0)
+        lastOutAmount = b40.vtx[1].vout[0].nValue
         new_txs = []
         for i in range(1, numTxes+1):
             tx = CTransaction()
@@ -564,14 +563,16 @@ class FullBlockTest(ComparisonTestFramework):
             # second input is corresponding P2SH output from b39
             tx.vin.append(CTxIn(COutPoint(b39.vtx[i].sha256, 0), b''))
             # Note: must pass the redeem_script (not p2sh_script) to the signature hash function
-            (sighash, err) = SignatureHash(redeem_script, tx, 1, SIGHASH_ALL)
-            sig = self.coinbase_key.sign(sighash) + bytes(bytearray([SIGHASH_ALL]))
+            sighash = SegwitVersion1SignatureHash(redeem_script, tx, 1, SIGHASH_ALL|SIGHASH_FORKID,
+                                                  lastOutAmount)
+            sig = self.coinbase_key.sign(sighash) + bytes(bytearray([SIGHASH_ALL|SIGHASH_FORKID]))
             scriptSig = CScript([sig, redeem_script])
 
             tx.vin[1].scriptSig = scriptSig
             tx.rehash()
             new_txs.append(tx)
             lastOutpoint = COutPoint(tx.sha256, 0)
+            lastOutAmount = tx.vout[0].nValue
 
         b40_sigops_to_fill = MAX_BLOCK_SIGOPS - (numTxes * b39_sigops_per_output + sigops) + 1
         tx = CTransaction()
@@ -584,7 +585,7 @@ class FullBlockTest(ComparisonTestFramework):
 
         # same as b40, but one less sigop
         tip(39)
-        block(41, spend=None)
+        b41 = block(41, spend=None)
         update_block(41, b40.vtx[1:-1])
         b41_sigops_to_fill = b40_sigops_to_fill - 1
         tx = CTransaction()
@@ -930,7 +931,7 @@ class FullBlockTest(ComparisonTestFramework):
         # -> b42 (12) -> b43 (13) -> b53 (14) -> b55 (15) -> b57 (16) -> b60 (17) -> b64 (18) -> b65 (19)
         #
         tip(64)
-        block(65)
+        b65 = block(65)
         tx1 = create_and_sign_tx(out[19].tx, out[19].n, out[19].tx.vout[0].nValue)
         tx2 = create_and_sign_tx(tx1, 0, 0)
         update_block(65, [tx1, tx2])
@@ -942,7 +943,7 @@ class FullBlockTest(ComparisonTestFramework):
         # -> b43 (13) -> b53 (14) -> b55 (15) -> b57 (16) -> b60 (17) -> b64 (18) -> b65 (19)
         #                                                                                    \-> b66 (20)
         tip(65)
-        block(66)
+        b66 = block(66)
         tx1 = create_and_sign_tx(out[20].tx, out[20].n, out[20].tx.vout[0].nValue)
         tx2 = create_and_sign_tx(tx1, 0, 1)
         update_block(66, [tx2, tx1])
@@ -955,7 +956,7 @@ class FullBlockTest(ComparisonTestFramework):
         #
         #
         tip(65)
-        block(67)
+        b67 = block(67)
         tx1 = create_and_sign_tx(out[20].tx, out[20].n, out[20].tx.vout[0].nValue)
         tx2 = create_and_sign_tx(tx1, 0, 1)
         tx3 = create_and_sign_tx(tx1, 0, 2)
@@ -975,7 +976,7 @@ class FullBlockTest(ComparisonTestFramework):
         #       this succeeds
         #
         tip(65)
-        block(68, additional_coinbase_value=10)
+        b68 = block(68, additional_coinbase_value=10)
         tx = create_and_sign_tx(out[20].tx, out[20].n, out[20].tx.vout[0].nValue-9)
         update_block(68, [tx])
         yield rejected(RejectResult(16, b'bad-cb-amount'))
@@ -1178,7 +1179,7 @@ class FullBlockTest(ComparisonTestFramework):
         #
         #  -> b81 (26) -> b82 (27) -> b83 (28)
         #
-        block(83)
+        b83 = block(83)
         op_codes = [OP_IF, OP_INVALIDOPCODE, OP_ELSE, OP_TRUE, OP_ENDIF]
         script = CScript(op_codes)
         tx1 = create_and_sign_tx(out[28].tx, out[28].n, out[28].tx.vout[0].nValue, script)
@@ -1198,7 +1199,7 @@ class FullBlockTest(ComparisonTestFramework):
         #                                    \-> b85 (29) -> b86 (30)            \-> b89a (32)
         #
         #
-        block(84)
+        b84 = block(84)
         tx1 = create_tx(out[29].tx, out[29].n, 0, CScript([OP_RETURN]))
         tx1.vout.append(CTxOut(0, CScript([OP_TRUE])))
         tx1.vout.append(CTxOut(0, CScript([OP_TRUE])))

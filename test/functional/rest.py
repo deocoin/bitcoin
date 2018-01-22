@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-# Copyright (c) 2014-2017 The Bitcoin Core developers
+# Copyright (c) 2014-2016 The Bitcoin Core developers
 # Distributed under the MIT software license, see the accompanying
 # file COPYING or http://www.opensource.org/licenses/mit-license.php.
 """Test the REST API."""
@@ -43,7 +43,8 @@ def http_post_call(host, port, path, requestdata = '', response_object = 0):
 class RESTTest (BitcoinTestFramework):
     FORMAT_SEPARATOR = "."
 
-    def set_test_params(self):
+    def __init__(self):
+        super().__init__()
         self.setup_clean_chain = True
         self.num_nodes = 3
 
@@ -210,9 +211,10 @@ class RESTTest (BitcoinTestFramework):
         # compare with block header
         response_header = http_get_call(url.hostname, url.port, '/rest/headers/1/'+bb_hash+self.FORMAT_SEPARATOR+"bin", True)
         assert_equal(response_header.status, 200)
-        assert_equal(int(response_header.getheader('content-length')), 80)
+        response_header_length = int(response_header.getheader('content-length'))
+        assert_greater_than(response_header_length, 80)
         response_header_str = response_header.read()
-        assert_equal(response_str[0:80], response_header_str)
+        assert_equal(response_str[0:response_header_length], response_header_str)
 
         # check block hex format
         response_hex = http_get_call(url.hostname, url.port, '/rest/block/'+bb_hash+self.FORMAT_SEPARATOR+"hex", True)

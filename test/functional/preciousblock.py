@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-# Copyright (c) 2015-2017 The Bitcoin Core developers
+# Copyright (c) 2015-2016 The Bitcoin Core developers
 # Distributed under the MIT software license, see the accompanying
 # file COPYING or http://www.opensource.org/licenses/mit-license.php.
 """Test the preciousblock RPC."""
@@ -17,15 +17,15 @@ def unidirectional_node_sync_via_rpc(node_src, node_dest):
     blockhash = node_src.getbestblockhash()
     while True:
         try:
-            assert(len(node_dest.getblock(blockhash, False)) > 0)
+            assert(len(node_dest.getblock(blockhash, False, True)) > 0)
             break
         except:
             blocks_to_copy.append(blockhash)
             blockhash = node_src.getblockheader(blockhash, True)['previousblockhash']
     blocks_to_copy.reverse()
     for blockhash in blocks_to_copy:
-        blockdata = node_src.getblock(blockhash, False)
-        assert(node_dest.submitblock(blockdata) in (None, 'inconclusive'))
+        blockdata = node_src.getblock(blockhash, False, True)
+        assert(node_dest.submitblock(blockdata, '', True) in (None, 'inconclusive'))
 
 def node_sync_via_rpc(nodes):
     for node_src in nodes:
@@ -35,7 +35,8 @@ def node_sync_via_rpc(nodes):
             unidirectional_node_sync_via_rpc(node_src, node_dest)
 
 class PreciousTest(BitcoinTestFramework):
-    def set_test_params(self):
+    def __init__(self):
+        super().__init__()
         self.setup_clean_chain = True
         self.num_nodes = 3
 
@@ -46,16 +47,16 @@ class PreciousTest(BitcoinTestFramework):
         self.log.info("Ensure submitblock can in principle reorg to a competing chain")
         self.nodes[0].generate(1)
         assert_equal(self.nodes[0].getblockcount(), 1)
-        hashZ = self.nodes[1].generate(2)[-1]
+        (hashY, hashZ) = self.nodes[1].generate(2)
         assert_equal(self.nodes[1].getblockcount(), 2)
         node_sync_via_rpc(self.nodes[0:3])
         assert_equal(self.nodes[0].getbestblockhash(), hashZ)
 
         self.log.info("Mine blocks A-B-C on Node 0")
-        hashC = self.nodes[0].generate(3)[-1]
+        (hashA, hashB, hashC) = self.nodes[0].generate(3)
         assert_equal(self.nodes[0].getblockcount(), 5)
         self.log.info("Mine competing blocks E-F-G on Node 1")
-        hashG = self.nodes[1].generate(3)[-1]
+        (hashE, hashF, hashG) = self.nodes[1].generate(3)
         assert_equal(self.nodes[1].getblockcount(), 5)
         assert(hashC != hashG)
         self.log.info("Connect nodes and check no reorg occurs")
