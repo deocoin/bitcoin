@@ -1,14 +1,20 @@
 // Copyright (c) 2009-2010 Satoshi Nakamoto
-// Copyright (c) 2009-2017 The Bitcoin Core developers
+// Copyright (c) 2009-2016 The Bitcoin Core developers
 // Distributed under the MIT software license, see the accompanying
 // file COPYING or http://www.opensource.org/licenses/mit-license.php.
 
-#include <util.h>
+#if defined(HAVE_CONFIG_H)
+#include "config/bitcoin-config.h"
+#endif
 
-#include <chainparamsbase.h>
-#include <random.h>
-#include <serialize.h>
-#include <utilstrencodings.h>
+#include "util.h"
+
+#include "chainparamsbase.h"
+#include "fs.h"
+#include "random.h"
+#include "serialize.h"
+#include "utilstrencodings.h"
+#include "utiltime.h"
 
 #include <stdarg.h>
 
@@ -72,7 +78,6 @@
 
 #include <boost/algorithm/string/case_conv.hpp> // for to_lower()
 #include <boost/algorithm/string/predicate.hpp> // for startswith() and endswith()
-#include <boost/interprocess/sync/file_lock.hpp>
 #include <boost/program_options/detail/config_file.hpp>
 #include <boost/thread.hpp>
 #include <openssl/crypto.h>
@@ -82,9 +87,9 @@
 // Application startup time (used for uptime calculation)
 const int64_t nStartupTime = GetTime();
 
-const char * const BITCOIN_CONF_FILENAME = "bitcoin.conf";
-const char * const BITCOIN_PID_FILENAME = "bitcoind.pid";
-const char * const DEFAULT_DEBUGLOGFILE = "debug.log";
+const char * const BITCOIN_CONF_FILENAME = "bitcoingold.conf";
+const char * const BITCOIN_LEGACY_CONF_FILENAME = "bitcoin.conf";
+const char * const BITCOIN_PID_FILENAME = "bgoldd.pid";
 
 ArgsManager gArgs;
 bool fPrintToConsole = false;
@@ -185,40 +190,26 @@ static void DebugPrintInit()
     vMsgsBeforeOpenLog = new std::list<std::string>;
 }
 
-fs::path GetDebugLogPath()
-{
-    fs::path logfile(gArgs.GetArg("-debuglogfile", DEFAULT_DEBUGLOGFILE));
-    if (logfile.is_absolute()) {
-        return logfile;
-    } else {
-        return GetDataDir() / logfile;
-    }
-}
-
-bool OpenDebugLog()
+void OpenDebugLog()
 {
     boost::call_once(&DebugPrintInit, debugPrintInitFlag);
     boost::mutex::scoped_lock scoped_lock(*mutexDebugLog);
 
     assert(fileout == nullptr);
     assert(vMsgsBeforeOpenLog);
-    fs::path pathDebug = GetDebugLogPath();
-
+    fs::path pathDebug = GetDataDir() / "debug.log";
     fileout = fsbridge::fopen(pathDebug, "a");
-    if (!fileout) {
-        return false;
-    }
-
-    setbuf(fileout, nullptr); // unbuffered
-    // dump buffered messages from before we opened the log
-    while (!vMsgsBeforeOpenLog->empty()) {
-        FileWriteStr(vMsgsBeforeOpenLog->front(), fileout);
-        vMsgsBeforeOpenLog->pop_front();
+    if (fileout) {
+        setbuf(fileout, nullptr); // unbuffered
+        // dump buffered messages from before we opened the log
+        while (!vMsgsBeforeOpenLog->empty()) {
+            FileWriteStr(vMsgsBeforeOpenLog->front(), fileout);
+            vMsgsBeforeOpenLog->pop_front();
+        }
     }
 
     delete vMsgsBeforeOpenLog;
     vMsgsBeforeOpenLog = nullptr;
-    return true;
 }
 
 struct CLogCategoryDesc
@@ -230,7 +221,6 @@ struct CLogCategoryDesc
 const CLogCategoryDesc LogCategories[] =
 {
     {BCLog::NONE, "0"},
-    {BCLog::NONE, "none"},
     {BCLog::NET, "net"},
     {BCLog::TOR, "tor"},
     {BCLog::MEMPOOL, "mempool"},
@@ -252,6 +242,7 @@ const CLogCategoryDesc LogCategories[] =
     {BCLog::COINDB, "coindb"},
     {BCLog::QT, "qt"},
     {BCLog::LEVELDB, "leveldb"},
+    {BCLog::POW, "pow"},
     {BCLog::ALL, "1"},
     {BCLog::ALL, "all"},
 };
@@ -365,7 +356,7 @@ int LogPrintStr(const std::string &str)
             // reopen the log file, if requested
             if (fReopenDebugLog) {
                 fReopenDebugLog = false;
-                fs::path pathDebug = GetDebugLogPath();
+                fs::path pathDebug = GetDataDir() / "debug.log";
                 if (fsbridge::freopen(pathDebug,"a",fileout) != nullptr)
                     setbuf(fileout, nullptr); // unbuffered
             }
@@ -374,27 +365,6 @@ int LogPrintStr(const std::string &str)
         }
     }
     return ret;
-}
-
-bool LockDirectory(const fs::path& directory, const std::string lockfile_name, bool probe_only)
-{
-    fs::path pathLockFile = directory / lockfile_name;
-    FILE* file = fsbridge::fopen(pathLockFile, "a"); // empty lock file; created if it doesn't exist.
-    if (file) fclose(file);
-
-    try {
-        static std::map<std::string, boost::interprocess::file_lock> locks;
-        boost::interprocess::file_lock& lock = locks.emplace(pathLockFile.string(), pathLockFile.string().c_str()).first->second;
-        if (!lock.try_lock()) {
-            return false;
-        }
-        if (probe_only) {
-            lock.unlock();
-        }
-    } catch (const boost::interprocess::interprocess_exception& e) {
-        return error("Error while attempting to lock directory %s: %s", directory.string(), e.what());
-    }
-    return true;
 }
 
 /** Interpret string as boolean, for argument parsing */
@@ -451,48 +421,49 @@ void ArgsManager::ParseParameters(int argc, const char* const argv[])
     }
 }
 
-std::vector<std::string> ArgsManager::GetArgs(const std::string& strArg) const
+std::vector<std::string> ArgsManager::GetArgs(const std::string& strArg)
 {
     LOCK(cs_args);
-    auto it = mapMultiArgs.find(strArg);
-    if (it != mapMultiArgs.end()) return it->second;
+    if (IsArgSet(strArg))
+        return mapMultiArgs.at(strArg);
     return {};
 }
 
-bool ArgsManager::IsArgSet(const std::string& strArg) const
+bool ArgsManager::IsArgSet(const std::string& strArg)
 {
     LOCK(cs_args);
     return mapArgs.count(strArg);
 }
 
-std::string ArgsManager::GetArg(const std::string& strArg, const std::string& strDefault) const
+std::string ArgsManager::GetArg(const std::string& strArg, const std::string& strDefault)
 {
     LOCK(cs_args);
-    auto it = mapArgs.find(strArg);
-    if (it != mapArgs.end()) return it->second;
+    if (mapArgs.count(strArg))
+        return mapArgs[strArg];
     return strDefault;
 }
 
-int64_t ArgsManager::GetArg(const std::string& strArg, int64_t nDefault) const
+int64_t ArgsManager::GetArg(const std::string& strArg, int64_t nDefault)
 {
     LOCK(cs_args);
-    auto it = mapArgs.find(strArg);
-    if (it != mapArgs.end()) return atoi64(it->second);
+    if (mapArgs.count(strArg))
+        return atoi64(mapArgs[strArg]);
     return nDefault;
 }
 
-bool ArgsManager::GetBoolArg(const std::string& strArg, bool fDefault) const
+bool ArgsManager::GetBoolArg(const std::string& strArg, bool fDefault)
 {
     LOCK(cs_args);
-    auto it = mapArgs.find(strArg);
-    if (it != mapArgs.end()) return InterpretBool(it->second);
+    if (mapArgs.count(strArg))
+        return InterpretBool(mapArgs[strArg]);
     return fDefault;
 }
 
 bool ArgsManager::SoftSetArg(const std::string& strArg, const std::string& strValue)
 {
     LOCK(cs_args);
-    if (IsArgSet(strArg)) return false;
+    if (mapArgs.count(strArg))
+        return false;
     ForceSetArg(strArg, strValue);
     return true;
 }
@@ -509,7 +480,8 @@ void ArgsManager::ForceSetArg(const std::string& strArg, const std::string& strV
 {
     LOCK(cs_args);
     mapArgs[strArg] = strValue;
-    mapMultiArgs[strArg] = {strValue};
+    mapMultiArgs[strArg].clear();
+    mapMultiArgs[strArg].push_back(strValue);
 }
 
 
@@ -554,13 +526,13 @@ void PrintExceptionContinue(const std::exception* pex, const char* pszThread)
 
 fs::path GetDefaultDataDir()
 {
-    // Windows < Vista: C:\Documents and Settings\Username\Application Data\Bitcoin
-    // Windows >= Vista: C:\Users\Username\AppData\Roaming\Bitcoin
-    // Mac: ~/Library/Application Support/Bitcoin
-    // Unix: ~/.bitcoin
+    // Windows < Vista: C:\Documents and Settings\Username\Application Data\BitcoinGold
+    // Windows >= Vista: C:\Users\Username\AppData\Roaming\BitcoinGold
+    // Mac: ~/Library/Application Support/BitcoinGold
+    // Unix: ~/.bitcoingold
 #ifdef WIN32
     // Windows
-    return GetSpecialFolderPath(CSIDL_APPDATA) / "Bitcoin";
+    return GetSpecialFolderPath(CSIDL_APPDATA) / "BitcoinGold";
 #else
     fs::path pathRet;
     char* pszHome = getenv("HOME");
@@ -570,10 +542,10 @@ fs::path GetDefaultDataDir()
         pathRet = fs::path(pszHome);
 #ifdef MAC_OSX
     // Mac
-    return pathRet / "Library/Application Support/Bitcoin";
+    return pathRet / "Library/Application Support/BitcoinGold";
 #else
     // Unix
-    return pathRet / ".bitcoin";
+    return pathRet / ".bitcoingold";
 #endif
 #endif
 }
@@ -606,10 +578,7 @@ const fs::path &GetDataDir(bool fNetSpecific)
     if (fNetSpecific)
         path /= BaseParams().DataDir();
 
-    if (fs::create_directories(path)) {
-        // This is the first run, create wallets subdirectory too
-        fs::create_directories(path / "wallets");
-    }
+    fs::create_directories(path);
 
     return path;
 }
@@ -631,33 +600,56 @@ fs::path GetConfigFile(const std::string& confPath)
     return pathConfigFile;
 }
 
-void ArgsManager::ReadConfigFile(const std::string& confPath)
-{
-    fs::ifstream streamConfig(GetConfigFile(confPath));
-    if (!streamConfig.good())
-        return; // No bitcoin.conf file is OK
+void ArgsManager::ReadConfigFileInternal(const std::string& confPath) {
+    // Get path and open stream
+    fs::path path = GetConfigFile(confPath);
+    fs::ifstream streamConfig(path);
 
-    {
-        LOCK(cs_args);
-        std::set<std::string> setOptions;
-        setOptions.insert("*");
-
-        for (boost::program_options::detail::config_file_iterator it(streamConfig, setOptions), end; it != end; ++it)
+    if (streamConfig.good()) {
         {
-            // Don't overwrite existing settings so command line settings override bitcoin.conf
-            std::string strKey = std::string("-") + it->string_key;
-            std::string strValue = it->value[0];
-            InterpretNegativeSetting(strKey, strValue);
-            if (mapArgs.count(strKey) == 0)
-                mapArgs[strKey] = strValue;
-            mapMultiArgs[strKey].push_back(strValue);
+            LOCK(cs_args);
+            std::set<std::string> setOptions;
+            setOptions.insert("*");
+
+            for (boost::program_options::detail::config_file_iterator it(streamConfig, setOptions), end; it != end; ++it) {
+                // Don't overwrite existing settings so command line settings override bitcoingold.conf
+                std::string strKey = std::string("-") + it->string_key;
+                std::string strValue = it->value[0];
+                InterpretNegativeSetting(strKey, strValue);
+
+                if (mapArgs.count(strKey) == 0) {
+                    mapArgs[strKey] = strValue;
+                }
+
+                mapMultiArgs[strKey].push_back(strValue);
+            }
+        }
+
+        // If datadir is changed in .conf file:
+        ClearDatadirCache();
+    }
+}
+
+void ArgsManager::ReadConfigFile(const std::string& confPath) {
+    fs::path path = GetConfigFile(confPath);
+
+    if (path.filename() == BITCOIN_CONF_FILENAME && !fs::exists(path)) {
+        // Construct legacy config path using confPath as base
+        fs::path legacyConfPath(path.string());
+        legacyConfPath.remove_filename();
+        legacyConfPath /= BITCOIN_LEGACY_CONF_FILENAME;
+
+        if(fs::exists(legacyConfPath) && fs::is_regular_file(legacyConfPath)) {
+            // Rename legacy conf
+            if(RenameOver(legacyConfPath, path)) {
+                LogPrintf("Renamed legacy configuration file %s to %s\n", legacyConfPath.string(), path.string());
+            } else {
+                throw std::runtime_error("Found legacy configuration file at " + legacyConfPath.string() + " but failed to rename it to " + path.string() + "! Manual action needed.");
+            }
         }
     }
-    // If datadir is changed in .conf file:
-    ClearDatadirCache();
-    if (!fs::is_directory(GetDataDir(false))) {
-        throw std::runtime_error(strprintf("specified data directory \"%s\" does not exist.", gArgs.GetArg("-datadir", "").c_str()));
-    }
+
+    ReadConfigFileInternal(confPath);
 }
 
 #ifndef WIN32
@@ -666,6 +658,7 @@ fs::path GetPidFile()
     fs::path pathPidFile(gArgs.GetArg("-pid", BITCOIN_PID_FILENAME));
     if (!pathPidFile.is_complete()) pathPidFile = GetDataDir() / pathPidFile;
     return pathPidFile;
+
 }
 
 void CreatePidFile(const fs::path &path, pid_t pid)
@@ -808,7 +801,7 @@ void ShrinkDebugFile()
     // Amount of debug.log to save at end when shrinking (must fit in memory)
     constexpr size_t RECENT_DEBUG_HISTORY_SIZE = 10 * 1000000;
     // Scroll debug.log if it's getting too big
-    fs::path pathLog = GetDebugLogPath();
+    fs::path pathLog = GetDataDir() / "debug.log";
     FILE* file = fsbridge::fopen(pathLog, "r");
     // If debug.log file is more than 10% bigger the RECENT_DEBUG_HISTORY_SIZE
     // trim it down by saving only the last RECENT_DEBUG_HISTORY_SIZE bytes
@@ -848,7 +841,6 @@ fs::path GetSpecialFolderPath(int nFolder, bool fCreate)
 
 void runCommand(const std::string& strCommand)
 {
-    if (strCommand.empty()) return;
     int nErr = ::system(strCommand.c_str());
     if (nErr)
         LogPrintf("runCommand error: system(%s) returned %d\n", strCommand, nErr);

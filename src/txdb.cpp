@@ -1,20 +1,21 @@
 // Copyright (c) 2009-2010 Satoshi Nakamoto
-// Copyright (c) 2009-2017 The Bitcoin Core developers
+// Copyright (c) 2009-2016 The Bitcoin Core developers
 // Distributed under the MIT software license, see the accompanying
 // file COPYING or http://www.opensource.org/licenses/mit-license.php.
 
-#include <txdb.h>
+#include "txdb.h"
 
-#include <chainparams.h>
-#include <hash.h>
-#include <random.h>
-#include <pow.h>
-#include <uint256.h>
-#include <util.h>
-#include <ui_interface.h>
-#include <init.h>
+#include "chainparams.h"
+#include "hash.h"
+#include "random.h"
+#include "pow.h"
+#include "uint256.h"
+#include "util.h"
+#include "ui_interface.h"
+#include "init.h"
 
 #include <stdint.h>
+#include <string.h>
 
 #include <boost/thread.hpp>
 
@@ -35,7 +36,7 @@ namespace {
 struct CoinEntry {
     COutPoint* outpoint;
     char key;
-    explicit CoinEntry(const COutPoint* ptr) : outpoint(const_cast<COutPoint*>(ptr)), key(DB_COIN)  {}
+    CoinEntry(const COutPoint* ptr) : outpoint(const_cast<COutPoint*>(ptr)), key(DB_COIN)  {}
 
     template<typename Stream>
     void Serialize(Stream &s) const {
@@ -281,13 +282,17 @@ bool CBlockTreeDB::LoadBlockIndexGuts(const Consensus::Params& consensusParams, 
                 pindexNew->nUndoPos       = diskindex.nUndoPos;
                 pindexNew->nVersion       = diskindex.nVersion;
                 pindexNew->hashMerkleRoot = diskindex.hashMerkleRoot;
+                memcpy(pindexNew->nReserved, diskindex.nReserved, sizeof(pindexNew->nReserved));
                 pindexNew->nTime          = diskindex.nTime;
                 pindexNew->nBits          = diskindex.nBits;
                 pindexNew->nNonce         = diskindex.nNonce;
+                pindexNew->nSolution      = diskindex.nSolution;
                 pindexNew->nStatus        = diskindex.nStatus;
                 pindexNew->nTx            = diskindex.nTx;
 
-                if (!CheckProofOfWork(pindexNew->GetBlockHash(), pindexNew->nBits, consensusParams))
+                // TODO(h4x3rotab): Check Equihash solution? Not sure why Zcash doesn't do it here.
+                bool postfork = pindexNew->nHeight >= consensusParams.BTGHeight;
+                if (!CheckProofOfWork(pindexNew->GetBlockHash(), pindexNew->nBits, postfork, consensusParams))
                     return error("%s: CheckProofOfWork failed: %s", __func__, pindexNew->ToString());
 
                 pcursor->Next();
@@ -371,9 +376,9 @@ bool CCoinsViewDB::Upgrade() {
     int64_t count = 0;
     LogPrintf("Upgrading utxo-set database...\n");
     LogPrintf("[0%%]...");
-    uiInterface.ShowProgress(_("Upgrading UTXO database"), 0, true);
     size_t batch_size = 1 << 24;
     CDBBatch batch(db);
+    uiInterface.SetProgressBreakAction(StartShutdown);
     int reportDone = 0;
     std::pair<unsigned char, uint256> key;
     std::pair<unsigned char, uint256> prev_key = {DB_COINS, uint256()};
@@ -386,7 +391,7 @@ bool CCoinsViewDB::Upgrade() {
             if (count++ % 256 == 0) {
                 uint32_t high = 0x100 * *key.second.begin() + *(key.second.begin() + 1);
                 int percentageDone = (int)(high * 100.0 / 65536.0 + 0.5);
-                uiInterface.ShowProgress(_("Upgrading UTXO database"), percentageDone, true);
+                uiInterface.ShowProgress(_("Upgrading UTXO database") + "\n"+ _("(press q to shutdown and continue later)") + "\n", percentageDone);
                 if (reportDone < percentageDone/10) {
                     // report max. every 10% step
                     LogPrintf("[%d%%]...", percentageDone);
@@ -420,7 +425,7 @@ bool CCoinsViewDB::Upgrade() {
     }
     db.WriteBatch(batch);
     db.CompactRange({DB_COINS, uint256()}, key);
-    uiInterface.ShowProgress("", 100, false);
+    uiInterface.SetProgressBreakAction(std::function<void(void)>());
     LogPrintf("[%s].\n", ShutdownRequested() ? "CANCELLED" : "DONE");
     return !ShutdownRequested();
 }

@@ -1,22 +1,22 @@
 // Copyright (c) 2009-2010 Satoshi Nakamoto
-// Copyright (c) 2009-2017 The Bitcoin Core developers
+// Copyright (c) 2009-2016 The Bitcoin Core developers
 // Distributed under the MIT software license, see the accompanying
 // file COPYING or http://www.opensource.org/licenses/mit-license.php.
 
-#include <chain.h>
-#include <chainparams.h>
-#include <core_io.h>
-#include <primitives/block.h>
-#include <primitives/transaction.h>
-#include <validation.h>
-#include <httpserver.h>
-#include <rpc/blockchain.h>
-#include <rpc/server.h>
-#include <streams.h>
-#include <sync.h>
-#include <txmempool.h>
-#include <utilstrencodings.h>
-#include <version.h>
+#include "chain.h"
+#include "chainparams.h"
+#include "core_io.h"
+#include "primitives/block.h"
+#include "primitives/transaction.h"
+#include "validation.h"
+#include "httpserver.h"
+#include "rpc/blockchain.h"
+#include "rpc/server.h"
+#include "streams.h"
+#include "sync.h"
+#include "txmempool.h"
+#include "utilstrencodings.h"
+#include "version.h"
 
 #include <boost/algorithm/string.hpp>
 
@@ -48,7 +48,7 @@ struct CCoin {
     ADD_SERIALIZE_METHODS;
 
     CCoin() : nHeight(0) {}
-    explicit CCoin(Coin&& in) : nHeight(in.nHeight), out(std::move(in.out)) {}
+    CCoin(Coin&& in) : nHeight(in.nHeight), out(std::move(in.out)) {}
 
     template <typename Stream, typename Operation>
     inline void SerializationOp(Stream& s, Operation ser_action)
@@ -131,14 +131,25 @@ static bool rest_headers(HTTPRequest* req,
     std::vector<std::string> path;
     boost::split(path, param, boost::is_any_of("/"));
 
-    if (path.size() != 2)
-        return RESTERR(req, HTTP_BAD_REQUEST, "No header count specified. Use /rest/headers/<count>/<hash>.<ext>.");
-
-    long count = strtol(path[0].c_str(), nullptr, 10);
+    if (path.size() != 2 && (path.size() != 3 || path[0] != "legacy")) {
+        return RESTERR(req, HTTP_BAD_REQUEST, "No header count specified. Use /rest/headers/<count>/<hash>.<ext> or /rest/headers/legacy/<count>/<hash>.<ext>.");
+    }                           //use old rule if URI=/legacy/<COUNT>/<BLOCK-HASH>
+    std::string headerCount,hashStr;
+    bool legacy_format = false;
+    if (path.size() == 2) {
+        headerCount = path[0];
+        hashStr = path[1];
+    }
+    else {
+        headerCount = path[1];
+        hashStr = path[2];
+        legacy_format = true;
+    }
+    long count = strtol(headerCount.c_str(), nullptr, 10);
     if (count < 1 || count > 2000)
         return RESTERR(req, HTTP_BAD_REQUEST, "Header count out of range: " + path[0]);
 
-    std::string hashStr = path[1];
+    
     uint256 hash;
     if (!ParseHashStr(hashStr, hash))
         return RESTERR(req, HTTP_BAD_REQUEST, "Invalid hash: " + hashStr);
@@ -156,8 +167,8 @@ static bool rest_headers(HTTPRequest* req,
             pindex = chainActive.Next(pindex);
         }
     }
-
-    CDataStream ssHeader(SER_NETWORK, PROTOCOL_VERSION);
+    int ser_flags = legacy_format ? SERIALIZE_BLOCK_LEGACY : 0;
+    CDataStream ssHeader(SER_NETWORK, PROTOCOL_VERSION | ser_flags);
     for (const CBlockIndex *pindex : headers) {
         ssHeader << pindex->GetBlockHeader();
     }
@@ -178,11 +189,8 @@ static bool rest_headers(HTTPRequest* req,
     }
     case RF_JSON: {
         UniValue jsonHeaders(UniValue::VARR);
-        {
-            LOCK(cs_main);
-            for (const CBlockIndex *pindex : headers) {
-                jsonHeaders.push_back(blockheaderToJSON(pindex));
-            }
+        for (const CBlockIndex *pindex : headers) {
+            jsonHeaders.push_back(blockheaderToJSON(pindex));
         }
         std::string strJSON = jsonHeaders.write() + "\n";
         req->WriteHeader("Content-Type", "application/json");
@@ -193,6 +201,9 @@ static bool rest_headers(HTTPRequest* req,
         return RESTERR(req, HTTP_NOT_FOUND, "output format not found (available: .bin, .hex)");
     }
     }
+
+    // not reached
+    return true; // continue to process further HTTP reqs on this cxn
 }
 
 static bool rest_block(HTTPRequest* req,
@@ -201,8 +212,18 @@ static bool rest_block(HTTPRequest* req,
 {
     if (!CheckWarmup(req))
         return false;
-    std::string hashStr;
-    const RetFormat rf = ParseDataFormat(hashStr, strURIPart);
+    std::string param, hashStr;
+    const RetFormat rf = ParseDataFormat(param, strURIPart);
+    std::vector<std::string> path;
+    boost::split(path, param, boost::is_any_of("/"));
+    bool legacy_format = false;
+    if (path.size() == 1) {          
+        hashStr = path[0];
+    }
+    else {
+        legacy_format = true;  //use old rule if URI=/legacy/<BLOCK-HASH>
+        hashStr = path[1];
+    }
 
     uint256 hash;
     if (!ParseHashStr(hashStr, hash))
@@ -222,8 +243,8 @@ static bool rest_block(HTTPRequest* req,
         if (!ReadBlockFromDisk(block, pblockindex, Params().GetConsensus()))
             return RESTERR(req, HTTP_NOT_FOUND, hashStr + " not found");
     }
-
-    CDataStream ssBlock(SER_NETWORK, PROTOCOL_VERSION | RPCSerializationFlags());
+    int ser_flags = legacy_format ? SERIALIZE_BLOCK_LEGACY : 0;
+    CDataStream ssBlock(SER_NETWORK, PROTOCOL_VERSION | RPCSerializationFlags() | ser_flags);
     ssBlock << block;
 
     switch (rf) {
@@ -242,11 +263,7 @@ static bool rest_block(HTTPRequest* req,
     }
 
     case RF_JSON: {
-        UniValue objBlock;
-        {
-            LOCK(cs_main);
-            objBlock = blockToJSON(block, pblockindex, showTxDetails);
-        }
+        UniValue objBlock = blockToJSON(block, pblockindex, showTxDetails);
         std::string strJSON = objBlock.write() + "\n";
         req->WriteHeader("Content-Type", "application/json");
         req->WriteReply(HTTP_OK, strJSON);
@@ -257,6 +274,9 @@ static bool rest_block(HTTPRequest* req,
         return RESTERR(req, HTTP_NOT_FOUND, "output format not found (available: " + AvailableDataFormatsString() + ")");
     }
     }
+
+    // not reached
+    return true; // continue to process further HTTP reqs on this cxn
 }
 
 static bool rest_block_extended(HTTPRequest* req, const std::string& strURIPart)
@@ -293,6 +313,9 @@ static bool rest_chaininfo(HTTPRequest* req, const std::string& strURIPart)
         return RESTERR(req, HTTP_NOT_FOUND, "output format not found (available: json)");
     }
     }
+
+    // not reached
+    return true; // continue to process further HTTP reqs on this cxn
 }
 
 static bool rest_mempool_info(HTTPRequest* req, const std::string& strURIPart)
@@ -315,6 +338,9 @@ static bool rest_mempool_info(HTTPRequest* req, const std::string& strURIPart)
         return RESTERR(req, HTTP_NOT_FOUND, "output format not found (available: json)");
     }
     }
+
+    // not reached
+    return true; // continue to process further HTTP reqs on this cxn
 }
 
 static bool rest_mempool_contents(HTTPRequest* req, const std::string& strURIPart)
@@ -337,6 +363,9 @@ static bool rest_mempool_contents(HTTPRequest* req, const std::string& strURIPar
         return RESTERR(req, HTTP_NOT_FOUND, "output format not found (available: json)");
     }
     }
+
+    // not reached
+    return true; // continue to process further HTTP reqs on this cxn
 }
 
 static bool rest_tx(HTTPRequest* req, const std::string& strURIPart)
@@ -386,6 +415,9 @@ static bool rest_tx(HTTPRequest* req, const std::string& strURIPart)
         return RESTERR(req, HTTP_NOT_FOUND, "output format not found (available: " + AvailableDataFormatsString() + ")");
     }
     }
+
+    // not reached
+    return true; // continue to process further HTTP reqs on this cxn
 }
 
 static bool rest_getutxos(HTTPRequest* req, const std::string& strURIPart)
@@ -416,8 +448,10 @@ static bool rest_getutxos(HTTPRequest* req, const std::string& strURIPart)
 
     if (uriParts.size() > 0)
     {
+
         //inputs is sent over URI scheme (/rest/getutxos/checkmempool/txid1-n/txid2-n/...)
-        if (uriParts[0] == "checkmempool") fCheckMemPool = true;
+        if (uriParts.size() > 0 && uriParts[0] == "checkmempool")
+            fCheckMemPool = true;
 
         for (size_t i = (fCheckMemPool) ? 1 : 0; i < uriParts.size(); i++)
         {
@@ -568,6 +602,9 @@ static bool rest_getutxos(HTTPRequest* req, const std::string& strURIPart)
         return RESTERR(req, HTTP_NOT_FOUND, "output format not found (available: " + AvailableDataFormatsString() + ")");
     }
     }
+
+    // not reached
+    return true; // continue to process further HTTP reqs on this cxn
 }
 
 static const struct {

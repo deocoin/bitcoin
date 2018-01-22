@@ -1,15 +1,15 @@
 // Copyright (c) 2009-2010 Satoshi Nakamoto
-// Copyright (c) 2009-2017 The Bitcoin Core developers
+// Copyright (c) 2009-2016 The Bitcoin Core developers
 // Distributed under the MIT software license, see the accompanying
 // file COPYING or http://www.opensource.org/licenses/mit-license.php.
 
 #ifndef BITCOIN_CHAINPARAMS_H
 #define BITCOIN_CHAINPARAMS_H
 
-#include <chainparamsbase.h>
-#include <consensus/params.h>
-#include <primitives/block.h>
-#include <protocol.h>
+#include "chainparamsbase.h"
+#include "consensus/params.h"
+#include "primitives/block.h"
+#include "protocol.h"
 
 #include <memory>
 #include <vector>
@@ -67,17 +67,20 @@ public:
     /** Policy: Filter transactions that do not match well-defined patterns */
     bool RequireStandard() const { return fRequireStandard; }
     uint64_t PruneAfterHeight() const { return nPruneAfterHeight; }
+    unsigned int EquihashN() const { return nEquihashN; }
+    unsigned int EquihashK() const { return nEquihashK; }
     /** Make miner stop after a block is found. In RPC, don't return until nGenProcLimit blocks are generated */
     bool MineBlocksOnDemand() const { return fMineBlocksOnDemand; }
     /** Return the BIP70 network string (main, test or regtest) */
     std::string NetworkIDString() const { return strNetworkID; }
     const std::vector<CDNSSeedData>& DNSSeeds() const { return vSeeds; }
     const std::vector<unsigned char>& Base58Prefix(Base58Type type) const { return base58Prefixes[type]; }
-    const std::string& Bech32HRP() const { return bech32_hrp; }
     const std::vector<SeedSpec6>& FixedSeeds() const { return vFixedSeeds; }
     const CCheckpointData& Checkpoints() const { return checkpointData; }
     const ChainTxData& TxData() const { return chainTxData; }
     void UpdateVersionBitsParameters(Consensus::DeploymentPos d, int64_t nStartTime, int64_t nTimeout);
+    /** Checkes if the pubkey script is correct for a given block height */
+    bool IsPremineAddressScript(const CScript& scriptPubKey, uint32_t height) const;
 protected:
     CChainParams() {}
 
@@ -85,9 +88,10 @@ protected:
     CMessageHeader::MessageStartChars pchMessageStart;
     int nDefaultPort;
     uint64_t nPruneAfterHeight;
+    unsigned int nEquihashN = 0;
+    unsigned int nEquihashK = 0;
     std::vector<CDNSSeedData> vSeeds;
     std::vector<unsigned char> base58Prefixes[MAX_BASE58_TYPES];
-    std::string bech32_hrp;
     std::string strNetworkID;
     CBlock genesis;
     std::vector<SeedSpec6> vFixedSeeds;
@@ -96,6 +100,7 @@ protected:
     bool fMineBlocksOnDemand;
     CCheckpointData checkpointData;
     ChainTxData chainTxData;
+    std::vector<std::vector<std::string> > vPreminePubkeys;
 };
 
 /**
@@ -110,6 +115,12 @@ std::unique_ptr<CChainParams> CreateChainParams(const std::string& chain);
  * startup, except for unit tests.
  */
 const CChainParams &Params();
+
+/**
+ * Return the chain parameters with Bitcoin address format. This is used for
+ * address conversion.
+ */
+const CChainParams &BitcoinAddressFormatParams();
 
 /**
  * Sets the params returned by Params() to those for the given BIP70 chain name.

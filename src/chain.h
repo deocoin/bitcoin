@@ -1,18 +1,19 @@
 // Copyright (c) 2009-2010 Satoshi Nakamoto
-// Copyright (c) 2009-2017 The Bitcoin Core developers
+// Copyright (c) 2009-2016 The Bitcoin Core developers
 // Distributed under the MIT software license, see the accompanying
 // file COPYING or http://www.opensource.org/licenses/mit-license.php.
 
 #ifndef BITCOIN_CHAIN_H
 #define BITCOIN_CHAIN_H
 
-#include <arith_uint256.h>
-#include <primitives/block.h>
-#include <pow.h>
-#include <tinyformat.h>
-#include <uint256.h>
+#include "arith_uint256.h"
+#include "primitives/block.h"
+#include "pow.h"
+#include "tinyformat.h"
+#include "uint256.h"
 
 #include <vector>
+#include <string.h>
 
 /**
  * Maximum amount of time that a block timestamp is allowed to exceed the
@@ -204,19 +205,21 @@ public:
     unsigned int nChainTx;
 
     //! Verification status of this block. See enum BlockStatus
-    uint32_t nStatus;
+    unsigned int nStatus;
 
     //! block header
-    int32_t nVersion;
+    int nVersion;
     uint256 hashMerkleRoot;
-    uint32_t nTime;
-    uint32_t nBits;
-    uint32_t nNonce;
+    uint32_t nReserved[7];
+    unsigned int nTime;
+    unsigned int nBits;
+    uint256 nNonce;
+    std::vector<unsigned char> nSolution;
 
     //! (memory only) Sequential id assigned to distinguish order in which blocks are received.
     int32_t nSequenceId;
 
-    //! (memory only) Maximum nTime in the chain up to and including this block.
+    //! (memory only) Maximum nTime in the chain upto and including this block.
     unsigned int nTimeMax;
 
     void SetNull()
@@ -237,9 +240,11 @@ public:
 
         nVersion       = 0;
         hashMerkleRoot = uint256();
+        memset(nReserved, 0, sizeof(nReserved));
         nTime          = 0;
         nBits          = 0;
-        nNonce         = 0;
+        nNonce         = uint256();
+        nSolution.clear();
     }
 
     CBlockIndex()
@@ -247,15 +252,19 @@ public:
         SetNull();
     }
 
-    explicit CBlockIndex(const CBlockHeader& block)
+    CBlockIndex(const CBlockHeader& block)
     {
         SetNull();
 
         nVersion       = block.nVersion;
         hashMerkleRoot = block.hashMerkleRoot;
+        // TODO(h4x3rotab): Copy nHeight or not?
+        nHeight        = block.nHeight;
+        memcpy(nReserved, block.nReserved, sizeof(nReserved));
         nTime          = block.nTime;
         nBits          = block.nBits;
         nNonce         = block.nNonce;
+        nSolution      = block.nSolution;
     }
 
     CDiskBlockPos GetBlockPos() const {
@@ -283,9 +292,12 @@ public:
         if (pprev)
             block.hashPrevBlock = pprev->GetBlockHash();
         block.hashMerkleRoot = hashMerkleRoot;
+        block.nHeight        = nHeight;
+        memcpy(block.nReserved, nReserved, sizeof(block.nReserved));
         block.nTime          = nTime;
         block.nBits          = nBits;
         block.nNonce         = nNonce;
+        block.nSolution      = nSolution;
         return block;
     }
 
@@ -304,7 +316,7 @@ public:
         return (int64_t)nTimeMax;
     }
 
-    static constexpr int nMedianTimeSpan = 11;
+    enum { nMedianTimeSpan=11 };
 
     int64_t GetMedianTimePast() const
     {
@@ -402,9 +414,13 @@ public:
         READWRITE(this->nVersion);
         READWRITE(hashPrev);
         READWRITE(hashMerkleRoot);
+        for(size_t i = 0; i < (sizeof(nReserved) / sizeof(nReserved[0])); i++) {
+            READWRITE(nReserved[i]);
+        }
         READWRITE(nTime);
         READWRITE(nBits);
         READWRITE(nNonce);
+        READWRITE(nSolution);
     }
 
     uint256 GetBlockHash() const
@@ -413,9 +429,12 @@ public:
         block.nVersion        = nVersion;
         block.hashPrevBlock   = hashPrev;
         block.hashMerkleRoot  = hashMerkleRoot;
+        block.nHeight         = nHeight;
+        memcpy(block.nReserved, nReserved, sizeof(block.nReserved));
         block.nTime           = nTime;
         block.nBits           = nBits;
         block.nNonce          = nNonce;
+        block.nSolution       = nSolution;
         return block.GetHash();
     }
 

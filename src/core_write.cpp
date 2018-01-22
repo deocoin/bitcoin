@@ -1,20 +1,20 @@
-// Copyright (c) 2009-2017 The Bitcoin Core developers
+// Copyright (c) 2009-2016 The Bitcoin Core developers
 // Distributed under the MIT software license, see the accompanying
 // file COPYING or http://www.opensource.org/licenses/mit-license.php.
 
-#include <core_io.h>
+#include "core_io.h"
 
-#include <base58.h>
-#include <consensus/consensus.h>
-#include <consensus/validation.h>
-#include <script/script.h>
-#include <script/standard.h>
-#include <serialize.h>
-#include <streams.h>
+#include "base58.h"
+#include "consensus/consensus.h"
+#include "consensus/validation.h"
+#include "script/script.h"
+#include "script/standard.h"
+#include "serialize.h"
+#include "streams.h"
 #include <univalue.h>
-#include <util.h>
-#include <utilmoneystr.h>
-#include <utilstrencodings.h>
+#include "util.h"
+#include "utilmoneystr.h"
+#include "utilstrencodings.h"
 
 UniValue ValueFromAmount(const CAmount& amount)
 {
@@ -64,10 +64,16 @@ std::string FormatScript(const CScript& script)
 const std::map<unsigned char, std::string> mapSigHashTypes = {
     {static_cast<unsigned char>(SIGHASH_ALL), std::string("ALL")},
     {static_cast<unsigned char>(SIGHASH_ALL|SIGHASH_ANYONECANPAY), std::string("ALL|ANYONECANPAY")},
+    {static_cast<unsigned char>(SIGHASH_ALL|SIGHASH_FORKID), std::string("ALL|FORKID")},
+    {static_cast<unsigned char>(SIGHASH_ALL|SIGHASH_FORKID|SIGHASH_ANYONECANPAY), std::string("ALL|FORKID|ANYONECANPAY")},
     {static_cast<unsigned char>(SIGHASH_NONE), std::string("NONE")},
     {static_cast<unsigned char>(SIGHASH_NONE|SIGHASH_ANYONECANPAY), std::string("NONE|ANYONECANPAY")},
+    {static_cast<unsigned char>(SIGHASH_NONE|SIGHASH_FORKID), std::string("NONE|FORKID")},
+    {static_cast<unsigned char>(SIGHASH_NONE|SIGHASH_FORKID|SIGHASH_ANYONECANPAY), std::string("NONE|FORKID|ANYONECANPAY")},
     {static_cast<unsigned char>(SIGHASH_SINGLE), std::string("SINGLE")},
     {static_cast<unsigned char>(SIGHASH_SINGLE|SIGHASH_ANYONECANPAY), std::string("SINGLE|ANYONECANPAY")},
+    {static_cast<unsigned char>(SIGHASH_SINGLE|SIGHASH_FORKID), std::string("SINGLE|FORKID")},
+    {static_cast<unsigned char>(SIGHASH_SINGLE|SIGHASH_FORKID|SIGHASH_ANYONECANPAY), std::string("SINGLE|FORKID|ANYONECANPAY")},
 };
 
 /**
@@ -102,7 +108,7 @@ std::string ScriptToAsmStr(const CScript& script, const bool fAttemptSighashDeco
                     // this won't decode correctly formatted public keys in Pubkey or Multisig scripts due to
                     // the restrictions on the pubkey formats (see IsCompressedOrUncompressedPubKey) being incongruous with the
                     // checks in CheckSignatureEncoding.
-                    if (CheckSignatureEncoding(vch, SCRIPT_VERIFY_STRICTENC, nullptr)) {
+                    if (CheckSignatureEncoding(vch, SCRIPT_VERIFY_STRICTENC | SCRIPT_ALLOW_NON_FORKID, nullptr)) {
                         const unsigned char chSigHashType = vch.back();
                         if (mapSigHashTypes.count(chSigHashType)) {
                             strSigHashDecode = "[" + mapSigHashTypes.find(chSigHashType)->second + "]";
@@ -148,9 +154,8 @@ void ScriptPubKeyToUniv(const CScript& scriptPubKey,
     out.pushKV("type", GetTxnOutputType(type));
 
     UniValue a(UniValue::VARR);
-    for (const CTxDestination& addr : addresses) {
-        a.push_back(EncodeDestination(addr));
-    }
+    for (const CTxDestination& addr : addresses)
+        a.push_back(CBitcoinAddress(addr).ToString());
     out.pushKV("addresses", a);
 }
 
